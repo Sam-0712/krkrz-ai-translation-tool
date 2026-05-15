@@ -8,7 +8,6 @@ ROOT = Path(__file__).resolve().parent
 S = ROOT / 'scripts'
 C = ROOT / 'config'
 I = ROOT / 'input' / 'scn'
-O = ROOT / 'translations'
 J = ROOT / 'output' / 'json'
 SCNOUT = ROOT / 'output' / 'scn'
 
@@ -21,7 +20,7 @@ SCRIPTS_CMDS = {
 }
 
 STEPS = [
-    ('1', '正向: SCN → JSON + translations.jsonl', SCRIPTS_CMDS['1']),
+    ('1', '正向: SCN → JSON + ori_text.jsonl', SCRIPTS_CMDS['1']),
     ('2', '提取角色名', SCRIPTS_CMDS['2']),
     ('3', 'AI 翻译', SCRIPTS_CMDS['3']),
     ('4', '清洗译文', SCRIPTS_CMDS['4']),
@@ -45,7 +44,7 @@ def menu():
 
 
 def main():
-    for d in [I, J, SCNOUT, O, ROOT / '_logs']: d.mkdir(parents=True, exist_ok=True)
+    for d in [I, J, SCNOUT, ROOT / '_logs']: d.mkdir(parents=True, exist_ok=True)
     while True:
         menu()
         c = input('请选择: ').strip().lower()

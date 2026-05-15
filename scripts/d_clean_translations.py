@@ -3,12 +3,12 @@
 清洗 translations_zh.jsonl。
 
 修复项目：
-  1. 去除译文首尾空白
-  2. 去除译文开头残留的 \n 和 \u3000（全角空格）
+  1. 去除残留的 \n 和 \u3000（全角空格）
+  2. 去除译文首尾空白
   3. 去除 AI 误加的「」（原文无「」但译文将整句话用「」包裹）
   4. 恢复「」丢失
   5. 转义 & 为全角 ＆（KAG 命令冲突）
-  6. 外层引号规范化：全角单引号／半角单引号／半角双引号 → 全角双引号 ""（嵌套按中文规范换为 ''）
+  6. 外层引号规范化：全角单引号／半角单引号／半角双引号 → 全角双引号 ""（嵌套按中文规范）
 
 用法：
   python scripts/clean_translations.py
@@ -42,15 +42,15 @@ def clean_entry(entry):
     original = zh
     changes = []
 
-    # ---- Rule 1: strip whitespace ----
+    # ---- Rule 1: strip leading \n and \u3000 ----
+    zh = zh.lstrip('\\n\u3000 ')
+    if zh != original:
+        changes.append('strip_leading_junk')
+
+    # ---- Rule 2: strip whitespace ----
     zh = zh.strip()
     if zh != original:
         changes.append('strip_whitespace')
-
-    # ---- Rule 2: strip leading \n and \u3000 ----
-    zh = zh.lstrip('\n\u3000 ')
-    if zh != original:
-        changes.append('strip_leading_junk')
 
     # ---- Rule 3: remove wrongly added 「」 wrappers ----
     # If original does NOT start with 「 but translation starts with 「

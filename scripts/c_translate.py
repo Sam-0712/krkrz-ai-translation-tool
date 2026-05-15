@@ -222,8 +222,6 @@ def main():
     import argparse
 
     ap = argparse.ArgumentParser(description='KiriKiriZ 游戏文本 AI 翻译')
-    ap.add_argument('--resume', action='store_true',
-                    help='从已有的输出文件中恢复（跳过已翻译的条目）')
     ap.add_argument('--log', default=None,
                     help='日志文件路径（默认 translate_<时间戳>.log）')
     args = ap.parse_args()
@@ -255,8 +253,8 @@ def main():
     model = api_cfg.get('model', '')
     batch_size = trans_cfg.get('batch_size', 30)
     transl_dir = root / 'output' / 'translations'
-    input_path = transl_dir / trans_cfg.get('input', 'translations', 'ori_text.jsonl')
-    output_path = transl_dir / trans_cfg.get('output', 'translations', 'translations_zh.jsonl')
+    input_path = transl_dir / trans_cfg.get('input', 'translations/ori_text.jsonl')
+    output_path = transl_dir / trans_cfg.get('output', 'translations/translations_zh.jsonl')
 
     if not api_key:
         log.error('错误: TOML 中未设置 api_key')
@@ -269,17 +267,12 @@ def main():
 
     file_groups = group_by_file(all_entries)
     file_names = sorted(file_groups.keys())
-    log.info(f'  共 {len(file_names)} 个文件')
 
     # 初始化 API 客户端
     client = OpenAI(api_key=api_key, base_url=base_url)
 
     # 构建 system prompt 并记录到日志
     system_prompt = build_system_prompt(cfg)
-    log.info('\n=== System Prompt ===')
-    for line in system_prompt.strip().split('\n'):
-        log.info(f'  | {line}')
-    log.info('=== End System Prompt ===\n')
 
     # 预览各文件批次
     total_batches_global = 0
@@ -287,7 +280,6 @@ def main():
         entries = file_groups[fname]
         nb = (len(entries) + batch_size - 1) // batch_size
         total_batches_global += nb
-        log.info(f'📄 {fname} ({len(entries)} 条, {nb} 批)')
     log.info(f'\n总计 {total_batches_global} 批')
     log.info(f'日志文件: {log_path}')
 
@@ -298,52 +290,79 @@ def main():
         return
 
     # --- 恢复模式 ---
+    # 始终自动恢复，检测已翻译的有效记录
     translated_indices: set[tuple] = set()
-    if args.resume and output_path.exists():
+    output_entries: list[dict] = []
+    
+    if output_path.exists():
         log.info(f'检测到已有输出文件，尝试恢复...')
         with open(str(output_path), 'r', encoding='utf-8') as f:
             for line in f:
                 if line.strip():
                     existing = json.loads(line)
-                    # 用 (file, scene, index) 三元组作为唯一标识
-                    translated_indices.add(
-                        (existing.get('file'), existing.get('scene'), existing.get('index'))
-                    )
+                    # 检查 translation 字段是否有效（非空字符串、非 null）
+                    translation = existing.get('translation')
+                    if translation is not None and translation != '':
+                        # 有效的翻译记录
+                        translated_indices.add(
+                            (existing.get('file'), existing.get('scene'), existing.get('index'))
+                        )
+                        output_entries.append(existing)
+                    # 如果 translation 为空或 null，这条记录会被跳过（后续重新翻译）
+        
+        # 清理输出文件：只保留有效翻译记录
+        if len(output_entries) < len(translated_indices):
+            # 有无效记录，需要重写文件
+            save_jsonl(str(output_path), output_entries)
+        
         log.info(f'  已翻译 {len(translated_indices)} 条，跳过')
-        output_entries = load_jsonl(str(output_path))
-    else:
-        output_entries = []
-
+    
     # 建立已翻译集合
     done_set = translated_indices
 
+    # --- 筛选未翻译条目并重新分 batch ---
+    # 按文件顺序收集未翻译的条目
+    pending_entries_by_file: dict[str, list[dict]] = {}
+    for fname in file_names:
+        entries = file_groups[fname]
+        pending = [e for e in entries if (e.get('file'), e.get('scene'), e.get('index')) not in done_set]
+        if pending:
+            pending_entries_by_file[fname] = pending
+
+    total_pending = sum(len(v) for v in pending_entries_by_file.values())
+    log.info(f'待翻译条目：{total_pending} 条')
+    
+    # 计算实际需要翻译的 batch 总数
+    total_batches_to_translate = 0
+    for fname, pending in pending_entries_by_file.items():
+        nb = (len(pending) + batch_size - 1) // batch_size
+        total_batches_to_translate += nb
+
     # --- 开始翻译 ---
-    translated_count = len(done_set)  # 恢复模式下为已翻译数量，否则为 0
+    translated_count = len(output_entries)  # 已翻译的条目数（恢复模式下为 output_entries 的长度）
     total_count = len(all_entries)
     batch_global = 0
 
     log.info(f'开始翻译，batch_size={batch_size}')
+    log.info(f'需要翻译 {total_batches_to_translate} 个 batch')
 
-    with tqdm(total=total_count, desc='翻译进度', unit='条',
+    with tqdm(total=total_pending, desc='翻译进度', unit='条',
               bar_format='{l_bar}{bar:30}{r_bar}') as pbar:
 
-        # 先更新进度条到恢复的位置
-        pbar.update(translated_count)
-        tqdm.write(f'已恢复 {translated_count} 条，继续翻译剩余 {total_count - translated_count} 条')
+        tqdm.write(f'已恢复 {translated_count} 条，继续翻译剩余 {total_pending} 条')
 
         for fname in file_names:
-            entries = file_groups[fname]
-            batches = [entries[i:i + batch_size] for i in range(0, len(entries), batch_size)]
+            pending = pending_entries_by_file.get(fname, [])
+            if not pending:
+                # 此文件已全部翻译完成，跳过（不需要再 update 进度条）
+                continue
+
+            # 对未翻译的条目重新分 batch
+            batches = [pending[i:i + batch_size] for i in range(0, len(pending), batch_size)]
             num_batches = len(batches)
 
             for bi, batch in enumerate(batches):
                 batch_global += 1
-
-                # 恢复模式：检查本批是否全部已翻译
-                batch_keys = [(e.get('file'), e.get('scene'), e.get('index')) for e in batch]
-                if all(k in done_set for k in batch_keys):
-                    pbar.update(len(batch))
-                    continue
 
                 translations = translate_batch(
                     client, model, system_prompt, batch,
@@ -355,14 +374,14 @@ def main():
                     entry['translation'] = translations[j] if j < len(translations) else None
 
                 output_entries.extend(batch)
-                # 只累加本次 batch 新翻译成功的数量
+                # 累加本次 batch 新翻译成功的数量
                 new_translations = sum(1 for t in translations if t is not None)
                 translated_count += new_translations
 
                 # 保存
                 save_jsonl(str(output_path), output_entries)
                 pbar.update(len(batch))
-                pbar.set_postfix(batch=f'{batch_global}/{total_batches_global}', file=fname)
+                pbar.set_postfix(batch=f'{batch_global}/{total_batches_to_translate}', file=fname)
 
     # --- 最终报告 ---
     tqdm.write('')
