@@ -121,10 +121,10 @@ template = """
 ## 依赖
 
 ```bash
-pip install tomli tqdm openai
+pip install tomllib tqdm openai
 ```
 
-Python 3.11+（或使用 tomli 兼容 Python 3.10）
+Python 3.11+
 
 ## 致谢
 - [GARbro](https://github.com/morkt/GARbro)
